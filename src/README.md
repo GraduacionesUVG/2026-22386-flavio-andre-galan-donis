@@ -1,0 +1,260 @@
+[![xc compatible](https://xcfile.dev/badge.svg)](https://xcfile.dev)
+
+# OBC MVP
+
+This repository exposes an MVP for the Quetzal-2 OBC.
+
+Quetzal-2 is a CubeSat 2U nanosatellite developed as an academic proyect by
+students and staff from the Universidad del Valle de Guatemala, this missions
+tests an On Board Computer (OBC) designed locally that executes an artificial
+inteligence capable of identifying clouds in pictures. This nanosatellite has an
+OBC made up of two processing units, the primary processing unit is based on
+commercial technology from GomSpace, the secondary OBC is developed locally and
+is powered by Portentas H7 from Arduino.
+
+The OBCs are vital systems in a space mission because they manage every other
+subsystem from the satellite and the communication between them. This project
+focuses in the bases of the secondary OBC developed locally at a software level,
+building the bases for the different operation modes the mission requires, the
+capture of photography and the interoperability of the two processing units of
+the OBC.
+
+The impact of this OBC developed locally represents a huge advancement on the
+starting point for next space missions, lowering the entry cost for developing
+space missions with respect to of-the-shelf solutions, since it proves that the
+use of space specialized hardware, which is relatively highly expensive is not a
+requirement for a successful mission.
+
+[Portenta H7](https://www.arduino.cc/pro/hardware/product/portenta-h7) is a high
+performance board released by [Arduino](https://www.arduino.cc).
+
+## Build the project
+
+To build the project, simply install the Nix package manager. Then enable nix
+flakes.
+
+All tasks needed to run the project are described below, use `xc` to run them.
+Beware some may need another task to run first. For example, lib is pretty much
+a dependency for every other task. You only need to run lib once.
+
+## Tasks
+
+### lib
+
+Directory: ./STM32H747/
+
+Build the static library of STM32H7 for CM4 and CM7.
+
+```sh
+build() {
+set -exu
+
+# Build STM32H7xx HAL library for both M4 and M7
+
+MCU=$1
+ARCH_NUMBER=$([[ "$MCU" == "M4" ]] && echo "4" || echo "7")
+if [ "$MCU" != "M4" ] && [ "$MCU" != "M7" ]; then
+	echo "Usage: ./build_lib.sh M4|M7"
+	exit 1
+fi
+
+if [ "$MCU" == "M4" ]; then
+	mkdir -p ../CM4/libs
+else
+	mkdir -p ../CM7/libs
+fi
+
+echo "Building STM32H7xx HAL library for $MCU..."
+EXTRA_FLAG=$([[ "$MCU" == "M4" ]] && echo "-mfpu=fpv4-sp-d16" || echo "-mfpu=fpv5-d16")
+# Compile all .c files
+for file in *.c; do
+	arm-none-eabi-gcc -c "$file" -o "${file%.c}.o" \
+		-mcpu=cortex-m"$ARCH_NUMBER" \
+		-mthumb \
+		-mfloat-abi=softfp \
+		"$EXTRA_FLAG" \
+		-DCORE_CM"$ARCH_NUMBER" \
+		-DSTM32H747xx -DUSE_FULL_LL_DRIVER \
+		-I./include \
+		-I../CM"$ARCH_NUMBER"/include \
+		-Os -g
+done
+
+# Compile startup file
+echo "Compiling startup_stm32h747xx.s..."
+arm-none-eabi-gcc -c startup_stm32h747xx.s -o startup_stm32h747xx.o \
+	-mcpu=cortex-m"$ARCH_NUMBER" \
+	-mthumb
+
+# Create archive
+echo "Creating library archive..."
+arm-none-eabi-ar rcs ../CM"$ARCH_NUMBER"/libs/stm32h7xx.a ./*.o
+echo "Library built: ../CM$ARCH_NUMBER/libs/stm32h7xx.a"
+
+# Clean up object files
+echo "Cleaning .o objects..."
+rm ./*.o
+
+echo "Done!"
+}
+
+build M4
+build M7
+```
+
+### m4
+
+Build the CM4 flash image, needs the static library to already be built!
+
+```sh
+make MCU=M4
+```
+
+### m7
+
+Build the CM7 flash image, needs the static library to already be built!
+
+```sh
+make MCU=M7
+```
+
+### clean
+
+Clean all generated artifacts (including the static library).
+
+```sh
+rm -r ./CM4/libs/ || echo "CM4 lib doesn't exist! Not cleaning..."
+rm -r ./CM7/libs/ || echo "CM7 lib doesn't exist! Not cleaning..."
+
+# make MCU=M7 clean
+# make MCU=M4 clean
+make clean
+```
+
+### flash
+
+Inputs: CORE
+
+Flash the to the specified core.
+
+```sh
+if [ "$CORE" == "m4" ]; then
+    sudo dfu-util --device 0x2341:0x035b -D ./bin/test_M4.elf.bin -a0 --dfuse-address=0x08100000:leave;
+elif [ "$CORE" == "m7" ]; then
+    sudo dfu-util --device 0x2341:0x035b -D ./bin/test_M7.elf.bin -a0 --dfuse-address=0x08040000:leave;
+else
+    echo "The CORE variable must be 'm4' or 'm7'!"
+fi
+```
+
+### unity
+
+Directory: ./deps/unity/
+
+Compile the Munit testing framework.
+
+```sh
+gcc -c unity.c -O2 -o unity.o
+```
+
+### test
+
+Build and run the test binary. Compile the unity framework first!
+
+```sh
+set +x
+cd ./Common/tests/
+for file in *.c; do
+    printf "================================================\n"
+    printf "Testing: %s\n" "$file"
+    printf "================================================\n"
+    set -x
+    gcc ../../deps/**/*.o "$file" -lm -DQTZ_DEBUG -g -o test.bin
+    ./test.bin
+    set +x
+done
+```
+
+### bear
+
+Requires: clean
+
+Regenerate compile_commands.json databases for both cores. This enables
+autocomplete!
+
+```sh
+xc lib
+bear --output CM4/compile_commands.json -- xc m4
+bear --output CM7/compile_commands.json -- xc m7
+```
+
+### monitor_usb
+
+Inputs: TTY
+
+Monitor output from serial monitor on Linux! You may need to change the serial
+port...
+
+```sh
+TTY=${TTY:-/dev/ttyUSB0}
+picocom -b 115200 -r -l "$TTY" --imap lfcrlf
+```
+
+### monitor_acm
+
+Inputs: TTY
+
+Monitor output from serial monitor on Linux! You may need to change the serial
+port...
+
+```sh
+TTY=${TTY:-/dev/ttyACM0}
+picocom -b 115200 -r -l "$TTY" --imap lfcrlf
+```
+
+### gen_seeds
+
+Inputs: CAMPAIGN_PATH
+
+Generate the seeds for fuzzing.
+
+```bash
+CAMPAIGN_PATH=${CAMPAIGN_PATH:-./Common/fuzzing/commands/}
+cd "$CAMPAIGN_PATH"
+gcc -lm -O seeds.c -o seeds.exe
+
+mkdir -p seeds/
+cd ./seeds
+../seeds.exe
+```
+
+### fuzzing
+
+Inputs: CAMPAIGN_PATH
+
+Fuzz a specific campaign.
+
+```bash
+CAMPAIGN_PATH=${CAMPAIGN_PATH:-./Common/fuzzing/commands/}
+xc gen_seeds "$CAMPAIGN_PATH"
+
+cd "$CAMPAIGN_PATH"
+afl-cc -g -lm -O -fprofile-instr-generate -fcoverage-mapping harness.c -o fuzzer.exe -fprofile-instr-generate
+AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 AFL_SKIP_CPUFREQ=1 afl-fuzz -i seeds/ -o output/ -s 69420 -- ./fuzzer.exe @@
+```
+
+### coverage
+
+Inputs: CAMPAIGN_PATH
+
+Generate coverage statistics from a campaign.
+
+```bash
+export PATH="$PWD:$PATH"
+CAMPAIGN_PATH=${CAMPAIGN_PATH:-./Common/fuzzing/commands/}
+xc gen_seeds "$CAMPAIGN_PATH"
+
+cd "$CAMPAIGN_PATH"
+cov-analysis.sh build afl-cc -lm -g -O -DCOVERAGE -fprofile-instr-generate -fcoverage-mapping harness.c -o fuzzer.exe -fprofile-instr-generate
+cov-analysis.sh -d output/ -e "./fuzzer.exe @@" -o covout
+```
